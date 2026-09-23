@@ -4,6 +4,8 @@
 
 This file is the source of truth for the `onshape-fin-toolkit` repository. It records the intended workflow, coordinate conventions, implemented V1 behavior, manufacturing assumptions, validation status, and V2 backlog.
 
+`README.md` covers how to use the tools and how they work. This document maintains the broader technical context, decisions, development status, regression checklist and results, and next steps. Contributor rules live in `AGENTS.md`.
+
 When implementation and this document disagree, do not silently choose one. Confirm the behavior in Onshape, then update the code and this document together.
 
 ## Project summary
@@ -20,7 +22,11 @@ The design is intentionally staged. Users should shape and approve the planform 
 
 ## Current checkpoint
 
+Local Onshape target mappings are stored in gitignored `onshape.local.md`, with a tracked `onshape.example.md` template. This supports the local-edit, explicit-upload workflow without committing personal document IDs. The mapping does not configure MCP test targets or provide automatic synchronization. Target links still need read-only verification in Onshape before the first upload; no geometry validation is required for this documentation-only setup.
+
 V1 is a working end-to-end geometric prototype in Onshape.
+
+On 2026-09-20, the user confirmed that the current `fin_generator.fs` and `fin_mold.fs` are the working baseline and that regression tests passed. See the Regression matrix section for the manual Onshape checklist and validation record.
 
 The current workflow is:
 
@@ -54,24 +60,24 @@ Not yet validated:
 
 ## Current source files
 
-The V1 checkpoint was developed in these files:
+The confirmed V1 baseline uses these repository files:
 
 ```text
-FinGenerator_step18_cant_root_trim.fs
-CreateMold_four_piece_poc.fs
+fin_generator.fs
+fin_mold.fs
 ```
 
-`FinGenerator_step18_cant_root_trim.fs` currently contains three exported features:
+`fin_generator.fs` contains three exported features:
 
 - `Fin Planform`
 - `Build Fin`
 - `Add Base`
 
-`CreateMold_four_piece_poc.fs` contains the standalone mold feature:
+`fin_mold.fs` contains the standalone mold feature:
 
 - `Create Mold - 4 Piece POC`
 
-The repository may rename these to stable production filenames during V2, but behavior should not change during the initial refactor.
+These replace the prototype filenames `FinGenerator_step18_cant_root_trim.fs` and `CreateMold_four_piece_poc.fs`. Preserve baseline behavior during the initial V2 refactor.
 
 ## Coordinate system
 
@@ -316,11 +322,11 @@ Fit compensation should be added only after printing, molding, measuring, and te
 - Preserve the working V1 Onshape document/version.
 - Create a V2 Onshape document or branch.
 - Commit the exact working FeatureScript files to Git.
-- Run the regression matrix below before refactoring.
+- Completed: baseline source confirmed and regression tests reported passed by the user on 2026-09-20. See the validation record below. Onshape version/document preservation is not recorded here yet.
 
 ### Phase 2 — Behavior-preserving refactor
 
-- Rename prototype files to stable production names.
+- Completed: stable repository filenames are `fin_generator.fs` and `fin_mold.fs`.
 - Remove duplicated planform-boundary and reference-point logic.
 - Centralize span stations, foil sample stations, thickness ratio, and rail landmark data.
 - Centralize mounting-base dimensions and mold defaults.
@@ -386,6 +392,8 @@ Keep API credentials out of Git and load them from environment variables or a lo
 
 ## Regression matrix
 
+This is the manual Onshape regression checklist, not an automated local test suite.
+
 Run these cases before and after any structural refactor:
 
 | Area | Cases | Pass condition |
@@ -400,6 +408,14 @@ Run these cases before and after any structural refactor:
 | Mold | Zero and both cant signs | Four distinct valid mold solids |
 | Mold socket | Default 15 mm / 5 mm offsets | Socket open; 10 mm of plug exposed |
 | Mold release | Translate each piece along intended pull direction | No obvious geometric lock in the POC configuration |
+
+### Validation record
+
+| Baseline | Result | Evidence |
+|---|---|---|
+| Current `fin_generator.fs` and `fin_mold.fs`, confirmed 2026-09-20 | Regression tests passed | User report; no independent agent execution. Individual case results and an Onshape version reference were not supplied. |
+
+Repeat this checklist after the refactor and record the outcome here. The baseline regression result does not establish physical fit or manufacturing readiness; those remain subject to the production-readiness criteria below.
 
 ## Acceptance criteria
 
@@ -479,5 +495,8 @@ Before modifying geometry code:
 
 ## Immediate next action
 
-The next engineering task is a behavior-preserving V2 refactor of the exact working V1 source. Establish the baseline regression results first, then clean up structure, debug visibility, body naming, and persistent identities before adding draft, alignment, or export automation.
+The Onshape MCP integration is available, and a minimal FeatureScript snippet evaluation succeeded. The user-provided target mappings are saved locally; access to those specific Feature Studios and the Part Studio has not yet been verified. The next task is read-only verification of the intended targets before the first upload. This takes priority over the V2 refactor. Keep credentials and access keys out of the repository.
 
+The following integration task is to connect the SimScale AI agent app for the planned automated workflow. Identify the available connection method and verify its supported capabilities before defining the automation. This is planned work; no SimScale connection or automated simulation workflow has been implemented or validated.
+
+After the integration tasks, resume the behavior-preserving V2 refactor of the confirmed working V1 source. Baseline regression tests have been reported passed. Start with the Phase 2 structural cleanup in small, reviewable increments, then repeat the regression checklist in Onshape. Debug visibility, body naming, and persistent identities follow in Phase 3, before draft, alignment, or export automation.
