@@ -13,46 +13,63 @@ import(path : "onshape/std/primitives.fs", version : "3070.0");
 // or resin bleed channels. Those details should be added after the four cavity
 // bodies regenerate and can be virtually separated without interference.
 
+// User-facing defaults; bounds below retain their original limits and units.
+const MOLD_DEFAULTS = {
+    "margin" : 15 * millimeter,
+    "sideWall" : 12 * millimeter,
+    "rootZ" : 0 * millimeter,
+    "baseSplitOffset" : 0 * millimeter,
+    "baseWidth" : 7 * millimeter,
+    "plugBorder" : 6 * millimeter,
+    "captureDepth" : 5 * millimeter
+};
+
+// Geometry checks and cutter clearance are independent of UI defaults.
+const MOLD_TIP_JOIN_TOLERANCE = 0.5 * millimeter;
+const MOLD_MIN_REFERENCE_LENGTH = 0.1 * millimeter;
+const MOLD_PARTING_NORMAL_TOLERANCE = 0.000001;
+const MOLD_SOCKET_CUTTER_MARGIN = 1 * millimeter;
+
 export const MOLD_MARGIN_BOUNDS =
 {
-    (meter) : [0.002, 0.015, 0.100],
-    (millimeter) : 15
+    (meter) : [0.002, MOLD_DEFAULTS.margin / meter, 0.100],
+    (millimeter) : MOLD_DEFAULTS.margin / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_WALL_BOUNDS =
 {
-    (meter) : [0.003, 0.012, 0.100],
-    (millimeter) : 12
+    (meter) : [0.003, MOLD_DEFAULTS.sideWall / meter, 0.100],
+    (millimeter) : MOLD_DEFAULTS.sideWall / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_ROOT_Z_BOUNDS =
 {
-    (meter) : [-1, 0, 1],
-    (millimeter) : 0
+    (meter) : [-1, MOLD_DEFAULTS.rootZ / meter, 1],
+    (millimeter) : MOLD_DEFAULTS.rootZ / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_SPLIT_OFFSET_BOUNDS =
 {
-    (meter) : [-0.100, 0, 0.100],
-    (millimeter) : 0
+    (meter) : [-0.100, MOLD_DEFAULTS.baseSplitOffset / meter, 0.100],
+    (millimeter) : MOLD_DEFAULTS.baseSplitOffset / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_BASE_WIDTH_BOUNDS =
 {
-    (meter) : [0.003, 0.007, 0.050],
-    (millimeter) : 7
+    (meter) : [0.003, MOLD_DEFAULTS.baseWidth / meter, 0.050],
+    (millimeter) : MOLD_DEFAULTS.baseWidth / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_PLUG_BORDER_BOUNDS =
 {
-    (meter) : [0.001, 0.006, 0.030],
-    (millimeter) : 6
+    (meter) : [0.001, MOLD_DEFAULTS.plugBorder / meter, 0.030],
+    (millimeter) : MOLD_DEFAULTS.plugBorder / millimeter
 } as LengthBoundSpec;
 
 export const MOLD_CAPTURE_DEPTH_BOUNDS =
 {
-    (meter) : [0.001, 0.005, 0.030],
-    (millimeter) : 5
+    (meter) : [0.001, MOLD_DEFAULTS.captureDepth / meter, 0.030],
+    (millimeter) : MOLD_DEFAULTS.captureDepth / millimeter
 } as LengthBoundSpec;
 
 
@@ -137,7 +154,7 @@ function getPlanformReferencePoints(
         trailingTip = te.point1;
     }
 
-    if (bestDistance > 0.5 * millimeter)
+    if (bestDistance > MOLD_TIP_JOIN_TOLERANCE)
     {
         throw regenError(
             "The selected leading and trailing edges must meet at the fin tip.",
@@ -150,6 +167,224 @@ function getPlanformReferencePoints(
         "rootTE" : rootTE,
         "tip" : (leadingTip + trailingTip) / 2
     };
+}
+
+
+// Resolve the canted seam plane without changing the endpoint-pair search.
+function getMoldPartingReference(context is Context, definition is map) returns map
+{
+    // Build the actual foil center plane from the selected planform edges.
+    // This follows fin cant and rake instead of assuming the global X-Z
+    // plane or the center of an axis-aligned bounding box.
+    var referencePoints = getPlanformReferencePoints(
+        context,
+        definition.leadingEdge,
+        definition.trailingEdge
+    );
+    var rootLE = referencePoints.rootLE;
+    var rootTE = referencePoints.rootTE;
+    var tipPoint = referencePoints.tip;
+
+    var chordVector = rootTE - rootLE;
+    var spanVector = tipPoint - (rootLE + rootTE) / 2;
+    if (norm(chordVector) < MOLD_MIN_REFERENCE_LENGTH ||
+        norm(spanVector) < MOLD_MIN_REFERENCE_LENGTH)
+    {
+        throw regenError(
+            "The selected edges do not define a usable root chord and span.",
+            ["leadingEdge", "trailingEdge"]
+        );
+    }
+
+    var chordDirection = normalize(chordVector);
+    var spanDirection = normalize(spanVector);
+    var partingNormal = cross(chordDirection, spanDirection);
+    if (norm(partingNormal) < MOLD_PARTING_NORMAL_TOLERANCE)
+    {
+        throw regenError(
+            "The selected edges produce a degenerate parting plane.",
+            ["leadingEdge", "trailingEdge"]
+        );
+    }
+    partingNormal = normalize(partingNormal);
+
+    // cross(chord, span) also guarantees that the coordinate system's
+    // in-plane Y axis points from the root toward the tip.
+    var partingPlane = plane(rootLE, partingNormal, chordDirection);
+    return { "rootLE" : rootLE, "rootTE" : rootTE, "plane" : partingPlane };
+}
+
+
+// Create and cut the two lengthwise base plugs before the foil-side molds.
+// The returned footprint also defines the through-open socket.
+function createMoldBasePlugs(
+    context is Context, id is Id, definition is map,
+    finBox is Box3d, reference is map) returns map
+{
+    var rootLE = reference.rootLE;
+    var rootTE = reference.rootTE;
+    var minX = finBox.minCorner[0];
+    var maxX = finBox.maxCorner[0];
+    var minZ = finBox.minCorner[2];
+    var baseCenterY = (rootLE[1] + rootTE[1]) / 2;
+    var baseMinY = baseCenterY - definition.baseWidth / 2
+        - definition.plugBorder;
+    var baseMaxY = baseCenterY + definition.baseWidth / 2
+        + definition.plugBorder;
+    var baseSplitY = baseCenterY + definition.baseSplitOffset;
+
+    if (baseSplitY <= baseMinY || baseSplitY >= baseMaxY)
+    {
+        throw regenError(
+            "The base split offset places the split outside the plug. " ~
+            "Reduce the offset.",
+            ["baseSplitOffset"]
+        );
+    }
+
+    var baseMinX = minX - definition.plugBorder;
+    var baseMaxX = maxX + definition.plugBorder;
+    var baseMinZ = minZ - definition.bottomMargin;
+
+    fCuboid(context, id + "baseSideA", {
+            "corner1" : vector(baseMinX, baseSplitY, baseMinZ),
+            "corner2" : vector(baseMaxX, baseMaxY, definition.rootZ)
+    });
+
+    fCuboid(context, id + "baseSideB", {
+            "corner1" : vector(baseMinX, baseMinY, baseMinZ),
+            "corner2" : vector(baseMaxX, baseSplitY, definition.rootZ)
+    });
+
+    var baseSideABody = qCreatedBy(id + "baseSideA", EntityType.BODY);
+    var baseSideBBody = qCreatedBy(id + "baseSideB", EntityType.BODY);
+
+    cutMoldCavity(
+        context,
+        id + "cutBaseSideA",
+        baseSideABody,
+        definition.finBody
+    );
+    cutMoldCavity(
+        context,
+        id + "cutBaseSideB",
+        baseSideBBody,
+        definition.finBody
+    );
+    return {
+        "sideA" : baseSideABody,
+        "sideB" : baseSideBBody,
+        "minX" : baseMinX, "maxX" : baseMaxX,
+        "minY" : baseMinY, "maxY" : baseMaxY
+    };
+}
+
+
+// Keep external envelopes world-aligned while the split follows fin cant.
+function createMoldFoilSides(
+    context is Context, id is Id, definition is map,
+    finBox is Box3d, partingPlane is Plane) returns map
+{
+    var minX = finBox.minCorner[0];
+    var maxX = finBox.maxCorner[0];
+    var minY = finBox.minCorner[1];
+    var maxY = finBox.maxCorner[1];
+    var minZ = finBox.minCorner[2];
+    var maxZ = finBox.maxCorner[2];
+    var sideMinX = minX - definition.chordMargin;
+    var sideMaxX = maxX + definition.chordMargin;
+    var sideMinY = minY - definition.plugBorder - definition.sideWall;
+    var sideMaxY = maxY + definition.plugBorder + definition.sideWall;
+    // Both offsets reference the selected body's minimum Z independently:
+    // the base plugs extend by Bottom margin (15 mm default), while the
+    // foil halves overlap them by only Capture depth (5 mm default).
+    var sideMinZ = minZ - definition.captureDepth;
+    var sideMaxZ = maxZ + definition.tipMargin;
+
+    fCuboid(context, id + "foilSideA", {
+            "corner1" : vector(sideMinX, sideMinY, sideMinZ),
+            "corner2" : vector(sideMaxX, sideMaxY, sideMaxZ)
+    });
+
+    fCuboid(context, id + "foilSideB", {
+            "corner1" : vector(sideMinX, sideMinY, sideMinZ),
+            "corner2" : vector(sideMaxX, sideMaxY, sideMaxZ)
+    });
+
+    var sideABody = qCreatedBy(id + "foilSideA", EntityType.BODY);
+    var sideBBody = qCreatedBy(id + "foilSideB", EntityType.BODY);
+
+    opSplitPart(context, id + "splitFoilSideA", {
+            "targets" : sideABody,
+            "tool" : partingPlane,
+            "keepType" : SplitOperationKeepType.KEEP_FRONT
+    });
+    opSplitPart(context, id + "splitFoilSideB", {
+            "targets" : sideBBody,
+            "tool" : partingPlane,
+            "keepType" : SplitOperationKeepType.KEEP_BACK
+    });
+
+    cutMoldCavity(context, id + "cutFoilSideA", sideABody, definition.finBody);
+    cutMoldCavity(context, id + "cutFoilSideB", sideBBody, definition.finBody);
+    return { "sideA" : sideABody, "sideB" : sideBBody, "minZ" : sideMinZ };
+}
+
+
+// Reuse one cutter, retaining it for Side A and consuming it on Side B.
+function openMoldBaseSocket(
+    context is Context, id is Id, definition is map,
+    basePlugs is map, foilSides is map)
+{
+    var baseMinX = basePlugs.minX;
+    var baseMaxX = basePlugs.maxX;
+    var baseMinY = basePlugs.minY;
+    var baseMaxY = basePlugs.maxY;
+    var sideMinZ = foilSides.minZ;
+    var sideABody = foilSides.sideA;
+    var sideBBody = foilSides.sideB;
+    // Use a through-cutter with the same external footprint as the two
+    // assembled base plugs. It begins below the mold envelope, so the plug
+    // socket is open at the bottom instead of being a blind pocket.
+    fCuboid(context, id + "baseSocketCutter", {
+            "corner1" : vector(
+                baseMinX,
+                baseMinY,
+                sideMinZ - MOLD_SOCKET_CUTTER_MARGIN
+            ),
+            "corner2" : vector(
+                baseMaxX,
+                baseMaxY,
+                definition.rootZ
+            )
+    });
+    var baseSocketCutter = qCreatedBy(
+        id + "baseSocketCutter",
+        EntityType.BODY
+    );
+
+    opBoolean(context, id + "openSocketFoilSideA", {
+            "targets" : sideABody,
+            "tools" : baseSocketCutter,
+            "operationType" : BooleanOperationType.SUBTRACTION,
+            "keepTools" : true
+    });
+    opBoolean(context, id + "openSocketFoilSideB", {
+            "targets" : sideBBody,
+            "tools" : baseSocketCutter,
+            "operationType" : BooleanOperationType.SUBTRACTION,
+            "keepTools" : false
+    });
+}
+
+
+function nameMoldBody(context is Context, body is Query, name is string)
+{
+    setProperty(context, {
+            "entities" : body,
+            "propertyType" : PropertyType.NAME,
+            "value" : name
+    });
 }
 
 
@@ -244,10 +479,6 @@ export const createFourPieceMold = defineFeature(function(
                 "tight" : true
         });
 
-        var minX = finBox.minCorner[0];
-        var maxX = finBox.maxCorner[0];
-        var minY = finBox.minCorner[1];
-        var maxY = finBox.maxCorner[1];
         var minZ = finBox.minCorner[2];
         var maxZ = finBox.maxCorner[2];
 
@@ -269,196 +500,17 @@ export const createFourPieceMold = defineFeature(function(
             );
         }
 
-        // Build the actual foil center plane from the selected planform edges.
-        // This follows fin cant and rake instead of assuming the global X-Z
-        // plane or the center of an axis-aligned bounding box.
-        var referencePoints = getPlanformReferencePoints(
-            context,
-            definition.leadingEdge,
-            definition.trailingEdge
-        );
-        var rootLE = referencePoints.rootLE;
-        var rootTE = referencePoints.rootTE;
-        var tipPoint = referencePoints.tip;
-
-        var chordVector = rootTE - rootLE;
-        var spanVector = tipPoint - (rootLE + rootTE) / 2;
-        if (norm(chordVector) < 0.1 * millimeter ||
-            norm(spanVector) < 0.1 * millimeter)
-        {
-            throw regenError(
-                "The selected edges do not define a usable root chord and span.",
-                ["leadingEdge", "trailingEdge"]
-            );
-        }
-
-        var chordDirection = normalize(chordVector);
-        var spanDirection = normalize(spanVector);
-        var partingNormal = cross(chordDirection, spanDirection);
-        if (norm(partingNormal) < 0.000001)
-        {
-            throw regenError(
-                "The selected edges produce a degenerate parting plane.",
-                ["leadingEdge", "trailingEdge"]
-            );
-        }
-        partingNormal = normalize(partingNormal);
-
-        // cross(chord, span) also guarantees that the coordinate system's
-        // in-plane Y axis points from the root toward the tip.
-        var partingPlane = plane(rootLE, partingNormal, chordDirection);
-
-        // ================================================================
-        // BASE PLUGS — CREATED FIRST
-        // The base is split lengthwise (hot-dog style) in the thickness
-        // direction. Each piece therefore contains the full Futures-base
-        // length and releases toward its respective foil-side mold.
-        // ================================================================
-
-        var baseCenterY = (rootLE[1] + rootTE[1]) / 2;
-        var baseMinY = baseCenterY - definition.baseWidth / 2
-            - definition.plugBorder;
-        var baseMaxY = baseCenterY + definition.baseWidth / 2
-            + definition.plugBorder;
-        var baseSplitY = baseCenterY + definition.baseSplitOffset;
-
-        if (baseSplitY <= baseMinY || baseSplitY >= baseMaxY)
-        {
-            throw regenError(
-                "The base split offset places the split outside the plug. " ~
-                "Reduce the offset.",
-                ["baseSplitOffset"]
-            );
-        }
-
-        var baseMinX = minX - definition.plugBorder;
-        var baseMaxX = maxX + definition.plugBorder;
-        var baseMinZ = minZ - definition.bottomMargin;
-
-        fCuboid(context, id + "baseSideA", {
-                "corner1" : vector(baseMinX, baseSplitY, baseMinZ),
-                "corner2" : vector(baseMaxX, baseMaxY, definition.rootZ)
-        });
-
-        fCuboid(context, id + "baseSideB", {
-                "corner1" : vector(baseMinX, baseMinY, baseMinZ),
-                "corner2" : vector(baseMaxX, baseSplitY, definition.rootZ)
-        });
-
-        var baseSideABody = qCreatedBy(id + "baseSideA", EntityType.BODY);
-        var baseSideBBody = qCreatedBy(id + "baseSideB", EntityType.BODY);
-
-        cutMoldCavity(
-            context,
-            id + "cutBaseSideA",
-            baseSideABody,
-            definition.finBody
-        );
-        cutMoldCavity(
-            context,
-            id + "cutBaseSideB",
-            baseSideBBody,
-            definition.finBody
-        );
-
-        // ================================================================
-        // FOIL-SIDE MOLDS
-        // Start with two identical world-aligned envelopes and retain opposite
-        // sides of the LE/TE parting plane. The internal seam follows fin cant,
-        // while every external wall remains parallel to global X, Y, or Z for
-        // straightforward fixturing.
-        // ================================================================
-
-        var sideMinX = minX - definition.chordMargin;
-        var sideMaxX = maxX + definition.chordMargin;
-        var sideMinY = minY - definition.plugBorder - definition.sideWall;
-        var sideMaxY = maxY + definition.plugBorder + definition.sideWall;
-        // Both offsets reference the selected body's minimum Z independently:
-        // the base plugs extend by Bottom margin (15 mm default), while the
-        // foil halves overlap them by only Capture depth (5 mm default).
-        var sideMinZ = minZ - definition.captureDepth;
-        var sideMaxZ = maxZ + definition.tipMargin;
-
-        fCuboid(context, id + "foilSideA", {
-                "corner1" : vector(sideMinX, sideMinY, sideMinZ),
-                "corner2" : vector(sideMaxX, sideMaxY, sideMaxZ)
-        });
-
-        fCuboid(context, id + "foilSideB", {
-                "corner1" : vector(sideMinX, sideMinY, sideMinZ),
-                "corner2" : vector(sideMaxX, sideMaxY, sideMaxZ)
-        });
-
-        var sideABody = qCreatedBy(id + "foilSideA", EntityType.BODY);
-        var sideBBody = qCreatedBy(id + "foilSideB", EntityType.BODY);
-
-        opSplitPart(context, id + "splitFoilSideA", {
-                "targets" : sideABody,
-                "tool" : partingPlane,
-                "keepType" : SplitOperationKeepType.KEEP_FRONT
-        });
-        opSplitPart(context, id + "splitFoilSideB", {
-                "targets" : sideBBody,
-                "tool" : partingPlane,
-                "keepType" : SplitOperationKeepType.KEEP_BACK
-        });
-
-        cutMoldCavity(context, id + "cutFoilSideA", sideABody, definition.finBody);
-        cutMoldCavity(context, id + "cutFoilSideB", sideBBody, definition.finBody);
-
-        // Use a through-cutter with the same external footprint as the two
-        // assembled base plugs. It begins below the mold envelope, so the plug
-        // socket is open at the bottom instead of being a blind pocket.
-        fCuboid(context, id + "baseSocketCutter", {
-                "corner1" : vector(
-                    baseMinX,
-                    baseMinY,
-                    sideMinZ - 1 * millimeter
-                ),
-                "corner2" : vector(
-                    baseMaxX,
-                    baseMaxY,
-                    definition.rootZ
-                )
-        });
-        var baseSocketCutter = qCreatedBy(
-            id + "baseSocketCutter",
-            EntityType.BODY
-        );
-
-        opBoolean(context, id + "openSocketFoilSideA", {
-                "targets" : sideABody,
-                "tools" : baseSocketCutter,
-                "operationType" : BooleanOperationType.SUBTRACTION,
-                "keepTools" : true
-        });
-        opBoolean(context, id + "openSocketFoilSideB", {
-                "targets" : sideBBody,
-                "tools" : baseSocketCutter,
-                "operationType" : BooleanOperationType.SUBTRACTION,
-                "keepTools" : false
-        });
+        // Pass the feature ID unchanged so extracted stages preserve every
+        // existing operation ID and body query.
+        var reference = getMoldPartingReference(context, definition);
+        var basePlugs = createMoldBasePlugs(context, id, definition, finBox, reference);
+        var foilSides = createMoldFoilSides(context, id, definition, finBox, reference.plane);
+        openMoldBaseSocket(context, id, definition, basePlugs, foilSides);
 
         // Stable body names make the four mold pieces easy to inspect, hide,
         // export, and test for virtual removal in the Part Studio.
-        setProperty(context, {
-                "entities" : sideABody,
-                "propertyType" : PropertyType.NAME,
-                "value" : "Mold - Foil Side A"
-        });
-        setProperty(context, {
-                "entities" : sideBBody,
-                "propertyType" : PropertyType.NAME,
-                "value" : "Mold - Foil Side B"
-        });
-        setProperty(context, {
-                "entities" : baseSideABody,
-                "propertyType" : PropertyType.NAME,
-                "value" : "Mold - Base Plug A"
-        });
-        setProperty(context, {
-                "entities" : baseSideBBody,
-                "propertyType" : PropertyType.NAME,
-                "value" : "Mold - Base Plug B"
-        });
+        nameMoldBody(context, foilSides.sideA, "Mold - Foil Side A");
+        nameMoldBody(context, foilSides.sideB, "Mold - Foil Side B");
+        nameMoldBody(context, basePlugs.sideA, "Mold - Base Plug A");
+        nameMoldBody(context, basePlugs.sideB, "Mold - Base Plug B");
     });
