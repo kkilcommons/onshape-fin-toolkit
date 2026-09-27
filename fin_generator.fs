@@ -2,6 +2,18 @@ FeatureScript 3070;
 import(path : "onshape/std/common.fs", version : "3070.0");
 import(path : "onshape/std/primitives.fs", version : "3070.0");
 
+// Shared sampling for the guide preview and Build Fin. Keep the finite
+// near-tip stations separate from the terminal maximum-Z loft point.
+const FIN_SPAN_STATIONS = [
+    0.00, 0.15, 0.30, 0.45, 0.60, 0.75, 0.85, 0.92, 0.96, 0.98, 0.99
+];
+const FIN_FOIL_X_STATIONS = [
+    0.0, 0.01, 0.025, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50,
+    0.60, 0.70, 0.80, 0.90, 0.95, 0.975, 0.99, 1.0
+];
+const NACA_0010_THICKNESS_RATIO = 0.10;
+const NACA_0010_RAIL_CHORD_FRACTION = 0.30;
+
 export const FIN_BASE_BOUNDS =
 {
     (meter) : [0.001, 0.1143, 1],
@@ -137,6 +149,86 @@ function getEdgeEndpoints(context is Context, edge is Query) returns map
         "point1" : evVertexPoint(context, {
                 "vertex" : qNthElement(vertices, 1)
         })
+    };
+}
+
+// Classify an already evaluated boundary without imposing feature-specific
+// selection requirements. Preserve query order and the last matching root.
+function classifyPlanformBoundary(context is Context, boundaryEdges is array) returns map
+{
+    var baseEdge;
+    var curvedEdges = [];
+    for (var edge in boundaryEdges)
+    {
+        var endpoints = getEdgeEndpoints(context, edge);
+        if (abs(endpoints.point0[2] - endpoints.point1[2]) < 0.000001 * meter)
+        {
+            baseEdge = edge;
+        }
+        else
+        {
+            curvedEdges = append(curvedEdges, {
+                        "edge" : edge,
+                        "point0" : endpoints.point0,
+                        "point1" : endpoints.point1
+            });
+        }
+    }
+    return { "baseEdge" : baseEdge, "curvedEdges" : curvedEdges };
+}
+
+// Root references increase in global X. Keep endpoint order for equal X,
+// matching Add Base; Build Fin rejects a zero chord through its own checks.
+function getPlanformRootReference(context is Context, baseEdge is Query) returns map
+{
+    var endpoints = getEdgeEndpoints(context, baseEdge);
+    var leadingPoint = endpoints.point0;
+    var trailingPoint = endpoints.point1;
+    if (leadingPoint[0] > trailingPoint[0])
+    {
+        leadingPoint = endpoints.point1;
+        trailingPoint = endpoints.point0;
+    }
+    return {
+        "leadingPoint" : leadingPoint,
+        "trailingPoint" : trailingPoint,
+        "chord" : trailingPoint[0] - leadingPoint[0]
+    };
+}
+
+// Non-root edges have different endpoint heights. Classify their lower
+// endpoints against the caller's root X references; ties remain trailing.
+function identifyPlanformSides(
+    curvedEdges is array,
+    rootLeadingX is ValueWithUnits,
+    rootTrailingX is ValueWithUnits) returns map
+{
+    var leadingEdge;
+    var trailingEdge;
+    var tipPoint;
+    for (var edgeData in curvedEdges)
+    {
+        var rootPoint = edgeData.point0;
+        var highPoint = edgeData.point1;
+        if (edgeData.point1[2] < edgeData.point0[2])
+        {
+            rootPoint = edgeData.point1;
+            highPoint = edgeData.point0;
+        }
+        if (abs(rootPoint[0] - rootLeadingX) < abs(rootPoint[0] - rootTrailingX))
+        {
+            leadingEdge = edgeData.edge;
+            tipPoint = highPoint;
+        }
+        else
+        {
+            trailingEdge = edgeData.edge;
+        }
+    }
+    return {
+        "leadingEdge" : leadingEdge,
+        "trailingEdge" : trailingEdge,
+        "tipPoint" : tipPoint
     };
 }
 
@@ -446,27 +538,11 @@ export const finPlanform = defineFeature(function(context is Context, id is Id, 
                 context,
                 qCreatedBy(id + "planformSketch", EntityType.EDGE)
             );
-            var previewLeadingEdge;
-            var previewTrailingEdge;
-
-            for (var previewEdge in previewBoundaryEdges)
-            {
-                var previewEndpoints = getEdgeEndpoints(context, previewEdge);
-
-                if (abs(previewEndpoints.point0[2] - previewEndpoints.point1[2]) >=
-                    0.000001 * meter)
-                {
-                    var previewRootPoint = previewEndpoints.point0;
-                    if (previewEndpoints.point1[2] < previewEndpoints.point0[2])
-                        previewRootPoint = previewEndpoints.point1;
-
-                    if (abs(previewRootPoint[0] - rootLE[0]) <
-                        abs(previewRootPoint[0] - rootTE[0]))
-                        previewLeadingEdge = previewEdge;
-                    else
-                        previewTrailingEdge = previewEdge;
-                }
-            }
+            var previewBoundary = classifyPlanformBoundary(context, previewBoundaryEdges);
+            var previewSides = identifyPlanformSides(
+                previewBoundary.curvedEdges, rootLE[0], rootTE[0]);
+            var previewLeadingEdge = previewSides.leadingEdge;
+            var previewTrailingEdge = previewSides.trailingEdge;
 
             if (previewLeadingEdge == undefined || previewTrailingEdge == undefined)
             {
@@ -478,19 +554,7 @@ export const finPlanform = defineFeature(function(context is Context, id is Id, 
 
             // Use the same dense station set as Build Fin so the preview shows
             // the actual profile-to-profile rail flow before the loft is built.
-            var previewStations = [
-                0.00,
-                0.15,
-                0.30,
-                0.45,
-                0.60,
-                0.75,
-                0.85,
-                0.92,
-                0.96,
-                0.98,
-                0.99
-            ];
+            var previewStations = FIN_SPAN_STATIONS;
             var previewUpperPoints = [];
             var previewLowerPoints = [];
 
@@ -522,8 +586,11 @@ export const finPlanform = defineFeature(function(context is Context, id is Id, 
                 }
 
                 var previewChord = previewTE[0] - previewLE[0];
-                var previewRailX = previewLE[0] + 0.30 * previewChord;
-                var previewRailY = naca00HalfThickness(0.30, 0.10) * previewChord;
+                var previewRailX = previewLE[0] + NACA_0010_RAIL_CHORD_FRACTION * previewChord;
+                var previewRailY = naca00HalfThickness(
+                    NACA_0010_RAIL_CHORD_FRACTION,
+                    NACA_0010_THICKNESS_RATIO
+                ) * previewChord;
 
                 previewUpperPoints = append(
                     previewUpperPoints,
@@ -804,28 +871,9 @@ export const buildFin = defineFeature(function(context is Context, id is Id, def
             );
         }
 
-        // The base is the only boundary edge whose endpoints share the same
-        // spanwise Z coordinate. The other two edges run from the base to tip.
-        var baseEdge;
-        var curvedEdges = [];
-
-        for (var i = 0; i < size(boundaryEdges); i += 1)
-        {
-            var endpoints = getEdgeEndpoints(context, boundaryEdges[i]);
-
-            if (abs(endpoints.point0[2] - endpoints.point1[2]) < 0.000001 * meter)
-            {
-                baseEdge = boundaryEdges[i];
-            }
-            else
-            {
-                curvedEdges = append(curvedEdges, {
-                            "edge" : boundaryEdges[i],
-                            "point0" : endpoints.point0,
-                            "point1" : endpoints.point1
-                });
-            }
-        }
+        var boundary = classifyPlanformBoundary(context, boundaryEdges);
+        var baseEdge = boundary.baseEdge;
+        var curvedEdges = boundary.curvedEdges;
 
         if (baseEdge == undefined || size(curvedEdges) != 2)
         {
@@ -835,52 +883,14 @@ export const buildFin = defineFeature(function(context is Context, id is Id, def
             );
         }
 
-        var baseEndpoints = getEdgeEndpoints(context, baseEdge);
-        var rootLeadingPoint;
-        var rootTrailingPoint;
-
-        if (baseEndpoints.point0[0] < baseEndpoints.point1[0])
-        {
-            rootLeadingPoint = baseEndpoints.point0;
-            rootTrailingPoint = baseEndpoints.point1;
-        }
-        else
-        {
-            rootLeadingPoint = baseEndpoints.point1;
-            rootTrailingPoint = baseEndpoints.point0;
-        }
-
-        var leadingEdgeQuery;
-        var trailingEdgeQuery;
-        var tipPoint;
-
-        for (var edgeData in curvedEdges)
-        {
-            var rootPoint;
-            var highPoint;
-
-            if (edgeData.point0[2] < edgeData.point1[2])
-            {
-                rootPoint = edgeData.point0;
-                highPoint = edgeData.point1;
-            }
-            else
-            {
-                rootPoint = edgeData.point1;
-                highPoint = edgeData.point0;
-            }
-
-            if (abs(rootPoint[0] - rootLeadingPoint[0]) <
-                abs(rootPoint[0] - rootTrailingPoint[0]))
-            {
-                leadingEdgeQuery = edgeData.edge;
-                tipPoint = highPoint;
-            }
-            else
-            {
-                trailingEdgeQuery = edgeData.edge;
-            }
-        }
+        var rootReference = getPlanformRootReference(context, baseEdge);
+        var rootLeadingPoint = rootReference.leadingPoint;
+        var rootTrailingPoint = rootReference.trailingPoint;
+        var sides = identifyPlanformSides(
+            curvedEdges, rootLeadingPoint[0], rootTrailingPoint[0]);
+        var leadingEdgeQuery = sides.leadingEdge;
+        var trailingEdgeQuery = sides.trailingEdge;
+        var tipPoint = sides.tipPoint;
 
         if (leadingEdgeQuery == undefined ||
             trailingEdgeQuery == undefined ||
@@ -892,7 +902,7 @@ export const buildFin = defineFeature(function(context is Context, id is Id, def
             );
         }
 
-        var rootChord = rootTrailingPoint[0] - rootLeadingPoint[0];
+        var rootChord = rootReference.chord;
         var finHeight = tipPoint[2] - rootLeadingPoint[2];
 
         if (rootChord <= 0 * meter || finHeight <= 0 * meter)
@@ -907,41 +917,11 @@ export const buildFin = defineFeature(function(context is Context, id is Id, def
         // Denser finite profiles reduce the amount of interpolation the loft
         // must infer, while the clustered near-tip stations still control the
         // final collapse into the maximum-Z tip point.
-        var spanStations = [
-            0.00,
-            0.15,
-            0.30,
-            0.45,
-            0.60,
-            0.75,
-            0.85,
-            0.92,
-            0.96,
-            0.98,
-            0.99
-        ];
-        var xStations = [
-            0.0,
-            0.01,
-            0.025,
-            0.05,
-            0.10,
-            0.20,
-            0.30,
-            0.40,
-            0.50,
-            0.60,
-            0.70,
-            0.80,
-            0.90,
-            0.95,
-            0.975,
-            0.99,
-            1.0
-        ];
+        var spanStations = FIN_SPAN_STATIONS;
+        var xStations = FIN_FOIL_X_STATIONS;
 
-        var thicknessRatio = 0.10;
-        var railChordFraction = 0.30;
+        var thicknessRatio = NACA_0010_THICKNESS_RATIO;
+        var railChordFraction = NACA_0010_RAIL_CHORD_FRACTION;
         var foilSections = [];
 
         for (var i = 0; i < size(spanStations); i += 1)
@@ -1061,6 +1041,49 @@ export enum FinBaseAlignment
 }
 
 
+// Tuned nominal Futures dimensions, shared by both base variants.
+// These values are not manufacturing compensation or construction margins.
+const FUTURES_BASE_DIMENSIONS = {
+    "length" : 113.5 * millimeter,
+    "thickness" : 7.0 * millimeter,
+    "screwNotchCenterX" : 3.3 * millimeter,
+    "screwNotchCenterDepth" : 6.4 * millimeter,
+    "screwNotchRadius" : 2.2 * millimeter,
+    "bottomFilletRadius" : 2 * millimeter,
+    "slotFilletRadius" : 1.5 * millimeter
+};
+
+// Placement policy for a root longer than the base in rear-alignment mode.
+const FIN_BASE_LEADING_OVERHANG = 5 * millimeter;
+
+// Keep construction clearance separate from nominal mounting dimensions.
+const FIN_BASE_CUTTER_MARGIN = 1 * millimeter;
+const FIN_ROOT_EXTENSION_MARGIN = 1 * millimeter;
+const FIN_ROOT_TRIM_MARGIN = 1 * millimeter;
+
+// Variant-specific nominal geometry. Keep the retention-mouth bottom offset
+// separate from the front inset even where their tuned values coincide.
+function getFinBaseDimensions(baseStandard is FinBaseStandard) returns map
+{
+    var dimensions = FUTURES_BASE_DIMENSIONS;
+    if (baseStandard == FinBaseStandard.FUTURES_SIDE_QUAD_FRONT)
+    {
+        dimensions.depth = 17.7 * millimeter;
+        dimensions.retentionMouthTop = 5.5 * millimeter;
+        dimensions.retentionMouthBottom = dimensions.depth - 2.1 * millimeter;
+        dimensions.frontBottomInset = 2.1 * millimeter;
+    }
+    else
+    {
+        dimensions.depth = 12.7 * millimeter;
+        dimensions.retentionMouthTop = 4.5 * millimeter;
+        dimensions.retentionMouthBottom = dimensions.depth - 0.7 * millimeter;
+        dimensions.frontBottomInset = 0.7 * millimeter;
+    }
+    return dimensions;
+}
+
+
 function createBaseRetentionNotchCutter(
     context is Context,
     id is Id,
@@ -1072,7 +1095,7 @@ function createBaseRetentionNotchCutter(
     frontBottomInset is ValueWithUnits)
 {
     var cutterPlane = plane(
-        vector(0 * meter, -baseThickness / 2 - 1 * millimeter, 0 * meter),
+        vector(0 * meter, -baseThickness / 2 - FIN_BASE_CUTTER_MARGIN, 0 * meter),
         vector(0, 1, 0),
         vector(1, 0, 0)
     );
@@ -1117,7 +1140,7 @@ function createBaseRetentionNotchCutter(
             "entities" : qSketchRegion(id + "Sketch"),
             "direction" : vector(0, 1, 0),
             "endBound" : BoundingType.BLIND,
-            "endDepth" : baseThickness + 2 * millimeter
+            "endDepth" : baseThickness + 2 * FIN_BASE_CUTTER_MARGIN
     });
 }
 
@@ -1174,31 +1197,16 @@ function createDetailedFinBase(
     id is Id,
     baseStandard is FinBaseStandard) returns map
 {
-    var baseLength = 113.5 * millimeter;
-    var baseThickness = 7.0 * millimeter;
-    var screwNotchCenterX = 3.3 * millimeter;
-    var screwNotchCenterDepth = 6.4 * millimeter;
-    var screwNotchRadius = 2.2 * millimeter;
-
-    var baseDepth;
-    var retentionMouthTop;
-    var retentionMouthBottom;
-    var frontBottomInset;
-
-    if (baseStandard == FinBaseStandard.FUTURES_SIDE_QUAD_FRONT)
-    {
-        baseDepth = 17.7 * millimeter;
-        retentionMouthTop = 5.5 * millimeter;
-        retentionMouthBottom = baseDepth - 2.1 * millimeter;
-        frontBottomInset = 2.1 * millimeter;
-    }
-    else
-    {
-        baseDepth = 12.7 * millimeter;
-        retentionMouthTop = 4.5 * millimeter;
-        retentionMouthBottom = baseDepth - 0.7 * millimeter;
-        frontBottomInset = 0.7 * millimeter;
-    }
+    var dimensions = getFinBaseDimensions(baseStandard);
+    var baseLength = dimensions.length;
+    var baseThickness = dimensions.thickness;
+    var screwNotchCenterX = dimensions.screwNotchCenterX;
+    var screwNotchCenterDepth = dimensions.screwNotchCenterDepth;
+    var screwNotchRadius = dimensions.screwNotchRadius;
+    var baseDepth = dimensions.depth;
+    var retentionMouthTop = dimensions.retentionMouthTop;
+    var retentionMouthBottom = dimensions.retentionMouthBottom;
+    var frontBottomInset = dimensions.frontBottomInset;
 
     createBaseBlank(
         context,
@@ -1211,25 +1219,25 @@ function createDetailedFinBase(
 
     fCuboid(context, id + "slotCutter", {
             "corner1" : vector(
-                -1 * millimeter,
-                -baseThickness / 2 - 1 * millimeter,
+                -FIN_BASE_CUTTER_MARGIN,
+                -baseThickness / 2 - FIN_BASE_CUTTER_MARGIN,
                 -screwNotchCenterDepth - screwNotchRadius
             ),
             "corner2" : vector(
                 screwNotchCenterX,
-                baseThickness / 2 + 1 * millimeter,
+                baseThickness / 2 + FIN_BASE_CUTTER_MARGIN,
                 -screwNotchCenterDepth + screwNotchRadius
             )
     });
     fCylinder(context, id + "roundCutter", {
             "bottomCenter" : vector(
                 screwNotchCenterX,
-                -baseThickness / 2 - 1 * millimeter,
+                -baseThickness / 2 - FIN_BASE_CUTTER_MARGIN,
                 -screwNotchCenterDepth
             ),
             "topCenter" : vector(
                 screwNotchCenterX,
-                baseThickness / 2 + 1 * millimeter,
+                baseThickness / 2 + FIN_BASE_CUTTER_MARGIN,
                 -screwNotchCenterDepth
             ),
             "radius" : screwNotchRadius
@@ -1275,7 +1283,7 @@ function createDetailedFinBase(
 
     opFillet(context, id + "bottomFillets", {
             "entities" : qUnion([rearBottomEdge, frontBottomEdge]),
-            "radius" : 2 * millimeter
+            "radius" : dimensions.bottomFilletRadius
     });
 
     baseEdges = qOwnedByBody(baseBody, EntityType.EDGE);
@@ -1297,7 +1305,7 @@ function createDetailedFinBase(
     );
     opFillet(context, id + "slotFillets", {
             "entities" : qUnion([slotUpperEdge, slotLowerEdge]),
-            "radius" : 1.5 * millimeter
+            "radius" : dimensions.slotFilletRadius
     });
 
     opDeleteBodies(context, id + "deleteConstruction", {
@@ -1367,16 +1375,8 @@ export const addBase = defineFeature(function(context is Context, id is Id, defi
             AdjacencyType.EDGE,
             EntityType.EDGE
         ));
-        var baseEdge;
-        for (var edge in boundaryEdges)
-        {
-            var endpoints = getEdgeEndpoints(context, edge);
-            if (abs(endpoints.point0[2] - endpoints.point1[2]) <
-                0.000001 * meter)
-            {
-                baseEdge = edge;
-            }
-        }
+        var boundary = classifyPlanformBoundary(context, boundaryEdges);
+        var baseEdge = boundary.baseEdge;
         if (baseEdge == undefined)
         {
             throw regenError(
@@ -1385,16 +1385,10 @@ export const addBase = defineFeature(function(context is Context, id is Id, defi
             );
         }
 
-        var rootEndpoints = getEdgeEndpoints(context, baseEdge);
-        var rootLeadingPoint = rootEndpoints.point0;
-        var rootTrailingPoint = rootEndpoints.point1;
-        if (rootLeadingPoint[0] > rootTrailingPoint[0])
-        {
-            var swapPoint = rootLeadingPoint;
-            rootLeadingPoint = rootTrailingPoint;
-            rootTrailingPoint = swapPoint;
-        }
-        var rootChord = rootTrailingPoint[0] - rootLeadingPoint[0];
+        var rootReference = getPlanformRootReference(context, baseEdge);
+        var rootLeadingPoint = rootReference.leadingPoint;
+        var rootTrailingPoint = rootReference.trailingPoint;
+        var rootChord = rootReference.chord;
 
         // Positive cant moves the tip toward global +Y.  rotationAround is
         // counterclockwise looking against +X, so negate the user angle.
@@ -1429,7 +1423,7 @@ export const addBase = defineFeature(function(context is Context, id is Id, defi
             var rootReach = max(abs(rootBox.minCorner[1]),
                                 abs(rootBox.maxCorner[1]));
             var extensionDepth = rootReach * tan(abs(definition.cant)) +
-                                 1 * millimeter;
+                                 FIN_ROOT_EXTENSION_MARGIN;
             opExtrude(context, id + "extendRoot", {
                     "entities" : rootFaceQuery,
                     "direction" : vector(0, 0, -1),
@@ -1462,7 +1456,7 @@ export const addBase = defineFeature(function(context is Context, id is Id, defi
                     "topology" : definition.finBody,
                     "tight" : true
             });
-            var trimMargin = 1 * millimeter;
+            var trimMargin = FIN_ROOT_TRIM_MARGIN;
             fCuboid(context, id + "rootTrimTool", {
                     "corner1" : cantedBox.minCorner -
                                 vector(1, 1, 1) * trimMargin,
@@ -1499,7 +1493,7 @@ export const addBase = defineFeature(function(context is Context, id is Id, defi
                 // For an oversized root, preserve a controlled 5 mm leading-
                 // edge overhang instead of pushing the base too far forward.
                 baseFrontX =
-                    rootLeadingPoint[0] + 5 * millimeter + definition.offset;
+                    rootLeadingPoint[0] + FIN_BASE_LEADING_OVERHANG + definition.offset;
                 baseRearX = baseFrontX + baseData.length;
             }
             else

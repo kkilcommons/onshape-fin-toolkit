@@ -22,7 +22,7 @@ The design is intentionally staged. Users should shape and approve the planform 
 
 ## Current checkpoint
 
-Local Onshape target mappings are stored in gitignored `onshape.local.md`, with a tracked `onshape.example.md` template. This supports the local-edit, explicit-upload workflow without committing personal document IDs. The mapping does not configure MCP test targets or provide automatic synchronization. Target links still need read-only verification in Onshape before the first upload; no geometry validation is required for this documentation-only setup.
+Local Onshape target mappings are stored in gitignored `onshape.local.md`, with a tracked `onshape.example.md` template. This supports the local-edit, explicit-upload workflow without committing personal document IDs. The mapping does not configure MCP test targets or provide automatic synchronization. On 2026-09-22, both mapped Feature Studios were read successfully through MCP and matched their local source files after normalizing line endings and trailing whitespace. The active Part Studio remains unverified; the available MCP tools do not expose targeted read-only Part Studio inspection. Source equality does not establish regeneration success.
 
 V1 is a working end-to-end geometric prototype in Onshape.
 
@@ -319,17 +319,15 @@ Fit compensation should be added only after printing, molding, measuring, and te
 
 ### Phase 1 — Freeze and characterize the baseline
 
-- Preserve the working V1 Onshape document/version.
-- Create a V2 Onshape document or branch.
-- Commit the exact working FeatureScript files to Git.
-- Completed: baseline source confirmed and regression tests reported passed by the user on 2026-09-20. See the validation record below. Onshape version/document preservation is not recorded here yet.
+- Completed per user confirmation on 2026-09-22: V1 baseline preparation, preservation, V2 workspace setup, and source checkpointing are done. No further V1 setup gate is required before refactoring.
+- Baseline regression tests were reported passed by the user on 2026-09-20. See the validation record below; this remains user-reported validation rather than an independent geometry test.
 
 ### Phase 2 — Behavior-preserving refactor
 
 - Completed: stable repository filenames are `fin_generator.fs` and `fin_mold.fs`.
-- Remove duplicated planform-boundary and reference-point logic.
-- Centralize span stations, foil sample stations, thickness ratio, and rail landmark data.
-- Centralize mounting-base dimensions and mold defaults.
+- Implemented locally, pending Onshape validation: extract shared boundary classification, root-reference, and side-identification helpers in `fin_generator.fs`. Preview, Build Fin, and Add Base retain their original selection queries and feature-specific validation.
+- Implemented locally, pending Onshape validation: centralize span stations, foil sample stations, thickness ratio, and rail landmark data. `fin_generator.fs` now defines shared constants consumed by the guide preview and Build Fin, preserving the exact numeric values and sampling order.
+- Implemented locally, pending Onshape validation: centralize mounting-base dimensions in `FUTURES_BASE_DIMENSIONS` and `getFinBaseDimensions`, with separate named constants for placement overhang and construction margins. Mold-default centralization remains planned as a separate increment.
 - Break long feature bodies into focused helper functions.
 - Standardize operation IDs, query names, comments, validation, and error messages.
 - Correct stale comments and coordinate-language inconsistencies.
@@ -410,6 +408,20 @@ Run these cases before and after any structural refactor:
 | Mold release | Translate each piece along intended pull direction | No obvious geometric lock in the POC configuration |
 
 ### Validation record
+
+The third local V2 increment centralizes mounting-base dimensions without intended geometry changes. Shared dimensions remain 113.5 mm length, 7.0 mm thickness, rear-slot center X/depth of 3.3/6.4 mm, 2.2 mm slot radius, and 2/1.5 mm bottom/slot fillet radii. The side/front variant retains 17.7 mm depth, 5.5 mm retention-mouth top, depth minus 2.1 mm mouth bottom, and 2.1 mm front inset; the center/rear variant retains 12.7 mm depth, 4.5 mm mouth top, depth minus 0.7 mm mouth bottom, and 0.7 mm inset. Mouth-bottom offsets and front insets remain independent dimensions despite equal tuned values. The selector preserves the existing variant branch behavior.
+
+Placement overhang remains 5 mm. Cutter, root-extension, and root-trim margins remain separate 1 mm constants; they are construction allowances, not mounting-interface compensation. A local source comparison expanded the new dimension references back to their original expressions and restored the relocated dimension-selection block, reproducing the complete pre-increment file exactly after line-ending normalization. Operation IDs, query expressions, and error messages also matched. The relocated values and both variant branches were reviewed, and `git diff --check` passed. No Onshape calls, uploads, compilation, or regeneration were performed for this increment. All three V2 increments still require the combined regression checks below; usage is unchanged, so `README.md` and `fin_mold.fs` remain unchanged.
+
+On 2026-09-26, the second local V2 increment extracted `classifyPlanformBoundary`, `getPlanformRootReference`, and `identifyPlanformSides`. The user explicitly deferred upload and Onshape validation to batch this with the sampling-constants increment and conserve API allocation. No Onshape MCP calls were made for this helper increment.
+
+The helpers preserve the 0.000001 m root-height tolerance, boundary query order, last matching root/side selection, nearest-root-X side classification, and the leading edge's high endpoint as the loft tip. Callers retain their existing error messages and validation order: Build Fin requires three boundaries and two side edges; Add Base only requires a root edge; preview still uses the sketch's known root X coordinates. Equal-X root endpoints retain their original order as in Add Base; Build Fin still rejects that degenerate selection at side identification because both root-X distances tie. No new geometry support or validation rules were added.
+
+Local source comparisons confirmed unchanged operation-ID expressions, query constructor expressions, regeneration errors, foil-section generation, loft construction, base construction, and cant/placement operations relative to the pre-extraction local file. The combined diff was reviewed and `git diff --check` passed. These are source checks, not FeatureScript compilation or kernel validation. At the eventual authorized upload, test preview off/on, nominal/short/tall and low/high-rake planforms, both base types and alignments, signed offsets, oversized-root placement, supported cant cases, and downstream molds using the regression matrix. Also check invalid selections still report the existing errors. `README.md` needs no change because usage is unchanged; `fin_mold.fs` is unchanged.
+
+The first V2 increment centralizes generator sampling data only. Local diff review confirms unchanged station values/order, thickness ratio, rail fraction, operation IDs, queries, and FeatureScript 3070 imports. Compilation and geometry regeneration have not been tested for this edit. At the next authorized upload, check guide preview on/off, regenerate Build Fin for nominal/short/tall and low/high-rake planforms, and run the regression matrix for downstream base and mold behavior. `fin_mold.fs` is unchanged. One read-only FeatureScript notes call was used before editing (conversation MCP count now 6).
+
+On 2026-09-22, two read-only `get_featurescript` calls verified access to the mapped generator and mold Feature Studios. Both matched the repository source after normalizing line endings and trailing whitespace. No code was uploaded, no geometry was changed, and no Part Studio regeneration was tested. The conversation's Onshape MCP call count is 5, including the earlier two usage checks and snippet evaluation; the next scheduled usage report is due at call 50.
 
 | Baseline | Result | Evidence |
 |---|---|---|
@@ -495,8 +507,8 @@ Before modifying geometry code:
 
 ## Immediate next action
 
-The Onshape MCP integration is available, and a minimal FeatureScript snippet evaluation succeeded. The user-provided target mappings are saved locally; access to those specific Feature Studios and the Part Studio has not yet been verified. The next task is read-only verification of the intended targets before the first upload. This takes priority over the V2 refactor. Keep credentials and access keys out of the repository.
+V2 Phase 2 is active. The user confirmed V1 work is done and explicitly deferred SimScale on 2026-09-22. Onshape integration and baseline source access are verified; further integration setup is not a prerequisite for the refactor.
 
-The following integration task is to connect the SimScale AI agent app for the planned automated workflow. Identify the available connection method and verify its supported capabilities before defining the automation. This is planned work; no SimScale connection or automated simulation workflow has been implemented or validated.
+Three local increments are ready for combined Onshape validation: shared generator sampling constants, shared planform-boundary/root-reference helpers, and centralized mounting-base dimensions. The user requested this final local increment before validating V2; pause further refactoring at this boundary. None of the increments is compiled or geometrically validated yet. At the next authorized upload, re-read the target Feature Studio to check for Onshape-side edits, validate the accumulated changes against the regression matrix, and record results before marking them complete or creating the working checkpoint commit. Start with nominal planform preview off/on, Build Fin, and both base variants; then cover planform extremes, both alignments and offsets, oversized-root placement, 0/+10/-10/+15/-15 degree cant, and downstream molds. Mold-default centralization remains a separate later increment.
 
-After the integration tasks, resume the behavior-preserving V2 refactor of the confirmed working V1 source. Baseline regression tests have been reported passed. Start with the Phase 2 structural cleanup in small, reviewable increments, then repeat the regression checklist in Onshape. Debug visibility, body naming, and persistent identities follow in Phase 3, before draft, alignment, or export automation.
+SimScale integration is deferred to the longer-term simulation workflow; no connection or automated simulation has been implemented. Debug visibility, body naming, and persistent identities follow the refactor in Phase 3, before draft, alignment, or export automation.
