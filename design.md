@@ -327,7 +327,7 @@ Fit compensation should be added only after printing, molding, measuring, and te
 - Completed: stable repository filenames are `fin_generator.fs` and `fin_mold.fs`.
 - Implemented locally, pending Onshape validation: extract shared boundary classification, root-reference, and side-identification helpers in `fin_generator.fs`. Preview, Build Fin, and Add Base retain their original selection queries and feature-specific validation.
 - Implemented locally, pending Onshape validation: centralize span stations, foil sample stations, thickness ratio, and rail landmark data. `fin_generator.fs` now defines shared constants consumed by the guide preview and Build Fin, preserving the exact numeric values and sampling order.
-- Implemented locally, pending Onshape validation: centralize mounting-base dimensions in `FUTURES_BASE_DIMENSIONS` and `getFinBaseDimensions`, with separate named constants for placement overhang and construction margins. Mold defaults and construction stages are also refactored locally, pending Onshape validation; see the validation record.
+- Implemented locally, pending Onshape validation: centralize mounting-base dimensions in `FUTURES_BASE_DIMENSIONS` and `getFinBaseDimensions`, with separate named constants for placement overhang and construction margins. Mold construction stages and tolerance constants are refactored; the attempted UI-default map was reverted to literal bounds after an Onshape precondition-analysis failure. The fix awaits validation; see the validation record.
 - Implemented locally for Create Mold, pending Onshape validation: extract parting-reference, base-plug, foil-side, open-socket, and naming helpers. Further generator helper extraction remains a possible later cleanup.
 - Standardize operation IDs, query names, comments, validation, and error messages.
 - Correct stale comments and coordinate-language inconsistencies.
@@ -409,7 +409,11 @@ Run these cases before and after any structural refactor:
 
 ### Validation record
 
-The mold refactor centralizes user-facing defaults in `MOLD_DEFAULTS` while retaining all existing parameter names, bounds, units, and default values. Named constants separately preserve the 0.5 mm tip-join tolerance, 0.1 mm minimum reference length, 0.000001 parting-normal threshold, and 1 mm socket-cutter margin. No new manufacturing features were added.
+On 2026-09-26, the user supplied an Onshape screenshot showing that every mold length input failed bounds precomputation, followed by `createFourPieceMold` precondition-analysis failure and cascading "Expected a range" messages. The map-member/unit expressions introduced in `MOLD_DEFAULTS` were not accepted by Onshape's parameter analyzer. The local fix removes that map and restores all seven `LengthBoundSpec` definitions verbatim from the pre-refactor baseline; those definitions remain the source of UI defaults. Geometry-stage helpers and named runtime tolerances/margins are retained. Source comparison confirms the bounds match the baseline. A successful upload response is insufficient evidence of precondition-analysis success, as this failure demonstrates. Compiler/UI recheck and geometry regeneration remain required.
+
+On 2026-09-26, both mapped live Feature Studios were re-read before upload and matched the pre-refactor repository baseline (`b2dae2a`) after normalizing line endings and trailing whitespace. The committed generator (`f60e19a`) and mold (`97dfad2`) sources were then uploaded to their mapped V2 Feature Studios, preserving FeatureScript 3070. Both upload calls returned `isError: false` with a null result and no error text. This confirms accepted uploads without reported errors; it is not an explicit compiler diagnostic report or proof of Part Studio regeneration. No targeted Part Studio inspection/regeneration tool is exposed by the current MCP, so geometry validation remains pending user checks in the active Part Studio. Four MCP calls were used for this read-and-upload step; the current conversation total is six (separate from earlier-session counts recorded below).
+
+The mold refactor initially centralized user-facing defaults in `MOLD_DEFAULTS` while retaining numeric values. This approach was superseded by the literal-bounds fix described above after Onshape rejected the bound expressions. Named constants separately preserve the 0.5 mm tip-join tolerance, 0.1 mm minimum reference length, 0.000001 parting-normal threshold, and 1 mm socket-cutter margin. No new manufacturing features were added.
 
 `createFourPieceMold` now validates the selections and height/overlap inputs, resolves the parting reference, creates and cuts the base plugs, creates/splits/cuts the foil sides, opens the plug socket, and names the bodies. Helpers receive the original feature ID unchanged so operation IDs and body queries remain stable. The existing closest-endpoint reference search and `cutMoldCavity` helper are reused. The socket cutter is retained for Side A and consumed on Side B; the nominal fin remains available after all four cavity cuts. Error text and validation order are preserved, and comments explain the stage boundaries and coordinate assumptions.
 
@@ -513,10 +517,33 @@ Before modifying geometry code:
 9. Never claim compilation or regeneration success without an actual Onshape test result from the user or an authorized integration.
 10. Keep credentials, document access keys, and local secrets out of the repository.
 
+## Agent validation capabilities
+
+Planned, not implemented: give agents the ability to compile, execute, inspect, and verify their own fin and mold changes without asking the user to relay every Onshape error. Both options below are complementary: isolated tests exercise repeatable cases, while targeted inspection checks the actual V2 model.
+
+### Option 1 — Dedicated MCP test workspace
+
+- Determine how the current server configures the Feature Studio and Part Studio used by `test_featurescript` and `test_feature`. Their exposed arguments do not accept target IDs; the local target mapping does not configure the server.
+- Verify the actual destinations and arrange an authorized test copy separate from the working V2 model before using tools that write test code or add features. Server configuration access and support for changing targets remain unverified.
+- Build self-contained tests that create the planform, fin, base, and molds with explicit inputs and selections. Preserve the production FeatureScript version and source; test scaffolding should supply the inputs needed for unattended execution.
+- Start with a nominal end-to-end case, then add both base variants, preview states, planform extremes, alignment/offset cases, and signed cant from the regression matrix. Check valid solid counts, root closure, four named mold pieces, retained nominal fin, and socket/plug geometry where measurable.
+- Capture compiler/runtime errors and geometry assertions with the tested source revision and case inputs. A snippet-only success is not a full-feature or end-to-end pass.
+
+### Option 2 — Targeted MCP inspection and execution tools
+
+- Investigate whether the current MCP can be extended/configured, or whether a separate integration is needed; access to its implementation and these capabilities has not been established.
+- Add explicit document/workspace/element targeting for reading Feature Studio diagnostics and Part Studio feature errors/regeneration status. Add body inspection sufficient to check counts, names, bounding boxes, and volumes where the API supports them.
+- Start with read-only diagnostics on the mapped V2 studios. Separately define tools for controlled feature execution or regeneration, with clear target and mutation behavior, so inspection never silently overwrites source or inserts test features.
+- Verify the tools report a known failing test case as a failure and a known passing case as a pass in the test workspace before relying on them for V2 validation.
+
+For both options, keep target URLs/IDs in ignored `onshape.local.md`, retain the existing authorization rules, and avoid committing credentials. Batch tests and diagnostics to conserve API allocation; count MCP calls separately from reported API requests. Record actual evidence and remaining manual checks here. Physical fit, release, and manufacturing validation remain separate from automated CAD checks. Updating these documents alone does not install tools or grant new access.
+
 ## Immediate next action
 
 V2 Phase 2 is active. The user confirmed V1 work is done and explicitly deferred SimScale on 2026-09-22. Onshape integration and baseline source access are verified; further integration setup is not a prerequisite for the refactor.
 
-The generator refactor is committed as tracking checkpoint `f60e19a`; the user subsequently requested the mold-default and construction-stage refactor plus its own tracking commit before validation. Both tools are now ready for combined Onshape validation. None of these refactors is compiled or geometrically validated yet. At the next authorized upload, re-read both target Feature Studios to check for Onshape-side edits, then compile and validate against the regression matrix and mold checks in the validation record. Record actual results before marking the refactors validated. Start with nominal planform preview off/on, Build Fin, and both base variants; then cover planform extremes, alignment and offsets, oversized-root placement, signed cant, and all four mold bodies. New manufacturing features remain deferred.
+The next integration task is to enable agent validation through both options above. First establish the MCP's test-target configuration and available extension path; then implement and verify isolated regression execution and targeted model diagnostics. This is planned work, not completed setup. Use verified capabilities for the pending V2 checks as they become available, and identify any checks that still require the user.
+
+The generator refactor is committed as tracking checkpoint `f60e19a` and the mold refactor as `97dfad2`. Both committed sources have been uploaded to the mapped V2 Feature Studios after checking for Onshape-side edits; neither upload reported errors. The user subsequently reported mold bounds/precondition errors; first validate the literal-bounds correction, then confirm regeneration in the active Part Studio and run the regression matrix and mold checks in the validation record. Geometry validation remains unconfirmed. Record actual results before marking the refactors validated. Start with nominal planform preview off/on, Build Fin, and both base variants; then cover planform extremes, alignment and offsets, oversized-root placement, signed cant, and all four mold bodies. New manufacturing features remain deferred.
 
 SimScale integration is deferred to the longer-term simulation workflow; no connection or automated simulation has been implemented. Debug visibility, body naming, and persistent identities follow the refactor in Phase 3, before draft, alignment, or export automation.

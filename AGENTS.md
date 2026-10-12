@@ -137,6 +137,15 @@ Inspect the existing implementation before assuming coordinate conventions.
 
 Follow the current development plan and immediate next action in `design.md`. Preserve the working fin-generation pipeline while implementing that plan.
 
+### Next steps: enable agents to check their own work
+
+These are planned integration capabilities, not tools or permissions already available. Follow the detailed plan in `design.md` under "Agent validation capabilities" and pursue both complementary options:
+
+* Dedicated test workspace: establish how the Onshape MCP selects its server-side test Feature Studio and Part Studio, verify the actual targets, and configure an authorized test copy. Build repeatable fin/base/mold regression cases there using the available FeatureScript evaluation tools. Do not assume `onshape.local.md` configures those targets; `test_feature` writes code and adds a test feature, so verify its destination before running it.
+* Targeted MCP tools: investigate adding tools that accept explicit document/workspace/element IDs and return Feature Studio diagnostics, Part Studio feature errors/regeneration status, and body measurements. Start with read-only inspection; distinguish it from tools that execute features or modify/regenerate model state.
+
+Once verified and authorized, use these capabilities to test changes and report actual diagnostics and geometry results, reducing reliance on manual user checks. Record the tested source, cases, results, limitations, and remaining manual checks in `design.md`; keep personal target IDs in `onshape.local.md`. Batch useful checks to conserve API allocation and continue the MCP usage accounting above. A successful upload or snippet evaluation does not establish that the complete V2 model regenerates. Existing installation, upload, and change-control rules still apply.
+
 ## Definition of Done
 
 For a code change:

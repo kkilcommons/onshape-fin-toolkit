@@ -13,63 +13,54 @@ import(path : "onshape/std/primitives.fs", version : "3070.0");
 // or resin bleed channels. Those details should be added after the four cavity
 // bodies regenerate and can be virtually separated without interference.
 
-// User-facing defaults; bounds below retain their original limits and units.
-const MOLD_DEFAULTS = {
-    "margin" : 15 * millimeter,
-    "sideWall" : 12 * millimeter,
-    "rootZ" : 0 * millimeter,
-    "baseSplitOffset" : 0 * millimeter,
-    "baseWidth" : 7 * millimeter,
-    "plugBorder" : 6 * millimeter,
-    "captureDepth" : 5 * millimeter
-};
-
 // Geometry checks and cutter clearance are independent of UI defaults.
 const MOLD_TIP_JOIN_TOLERANCE = 0.5 * millimeter;
 const MOLD_MIN_REFERENCE_LENGTH = 0.1 * millimeter;
 const MOLD_PARTING_NORMAL_TOLERANCE = 0.000001;
 const MOLD_SOCKET_CUTTER_MARGIN = 1 * millimeter;
 
+// Keep UI bounds literal: precondition analysis cannot precompute the
+// previous map-member/unit expressions. These bounds own the UI defaults.
 export const MOLD_MARGIN_BOUNDS =
 {
-    (meter) : [0.002, MOLD_DEFAULTS.margin / meter, 0.100],
-    (millimeter) : MOLD_DEFAULTS.margin / millimeter
+    (meter) : [0.002, 0.015, 0.100],
+    (millimeter) : 15
 } as LengthBoundSpec;
 
 export const MOLD_WALL_BOUNDS =
 {
-    (meter) : [0.003, MOLD_DEFAULTS.sideWall / meter, 0.100],
-    (millimeter) : MOLD_DEFAULTS.sideWall / millimeter
+    (meter) : [0.003, 0.012, 0.100],
+    (millimeter) : 12
 } as LengthBoundSpec;
 
 export const MOLD_ROOT_Z_BOUNDS =
 {
-    (meter) : [-1, MOLD_DEFAULTS.rootZ / meter, 1],
-    (millimeter) : MOLD_DEFAULTS.rootZ / millimeter
+    (meter) : [-1, 0, 1],
+    (millimeter) : 0
 } as LengthBoundSpec;
 
 export const MOLD_SPLIT_OFFSET_BOUNDS =
 {
-    (meter) : [-0.100, MOLD_DEFAULTS.baseSplitOffset / meter, 0.100],
-    (millimeter) : MOLD_DEFAULTS.baseSplitOffset / millimeter
+    (meter) : [-0.100, 0, 0.100],
+    (millimeter) : 0
 } as LengthBoundSpec;
 
 export const MOLD_BASE_WIDTH_BOUNDS =
 {
-    (meter) : [0.003, MOLD_DEFAULTS.baseWidth / meter, 0.050],
-    (millimeter) : MOLD_DEFAULTS.baseWidth / millimeter
+    (meter) : [0.003, 0.007, 0.050],
+    (millimeter) : 7
 } as LengthBoundSpec;
 
 export const MOLD_PLUG_BORDER_BOUNDS =
 {
-    (meter) : [0.001, MOLD_DEFAULTS.plugBorder / meter, 0.030],
-    (millimeter) : MOLD_DEFAULTS.plugBorder / millimeter
+    (meter) : [0.001, 0.006, 0.030],
+    (millimeter) : 6
 } as LengthBoundSpec;
 
 export const MOLD_CAPTURE_DEPTH_BOUNDS =
 {
-    (meter) : [0.001, MOLD_DEFAULTS.captureDepth / meter, 0.030],
-    (millimeter) : MOLD_DEFAULTS.captureDepth / millimeter
+    (meter) : [0.001, 0.005, 0.030],
+    (millimeter) : 5
 } as LengthBoundSpec;
 
 
